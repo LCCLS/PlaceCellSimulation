@@ -1,40 +1,55 @@
 #!/bin/bash
 
-# === Configurable arguments ===
-GRID_SIZE=3
-REPLICATES=2
+# === Hard-coded Speedup Comparison Script ===
+# Runs the experiment twice: once with 1 CPU actor, once with 8 actors,
+# then prints a summary of the two runtimes.
 
-# Navigate to the script's directory
+# Configurable arguments
+GRID_SIZE=${GRID_SIZE:3}
+REPLICATES=${REPLICATES:1}
+
+# Navigate to script directory
 cd "$(dirname "$0")"
-
 echo "[✓] Inside project folder: $PWD"
 
-# Create virtual environment if missing
+# Ensure and activate venv
 if [ ! -d "venv" ]; then
-    echo "[✓] Creating virtual environment..."
     python3 -m venv venv
 fi
-
-# Activate the virtual environment
-echo "[✓] Activating virtual environment..."
 source venv/bin/activate
 
-# Install core packages
-echo "[✓] Installing base packages..."
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install evotorch
+# Install dependencies
+pip install --upgrade pip >&2
+pip install -r requirements.txt >&2
+pip install evotorch >&2
 
-# Check if evotorch is installed, if not, install it
-if ! python3 -c "import evotorch" &> /dev/null; then
-    echo "[✓] Installing evotorch..."
-    pip install evotorch
-else
-    echo "[✓] evotorch already installed."
-fi
+# Prevent BLAS/OpenMP oversubscription
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 
-# Run your experiment
-echo "[✓] Running experiment with grid size $GRID_SIZE and $REPLICATES replicates..."
-python3 main.py --grid_size $GRID_SIZE --replicates $REPLICATES
+# Function to run and time one experiment.
+# Verbose logs go to stderr; only elapsed seconds to stdout.
+run_and_time() {
+    local actors=$8
+    >&2 echo
+    >&2 echo "[▶] Starting run with $actors actor(s)..."
+    local start=$(date +%s)
+    python3 main.py \
+      --grid_size "$GRID_SIZE" \
+      --replicates "$REPLICATES" \
+      --num_actors "$actors" >&2
+    local end=$(date +%s)
+    local elapsed=$((end - start))
+    >&2 echo "[⏱] Completed with $actors actor(s) in ${elapsed}s"
+    echo "$elapsed"
+}
 
-echo "[✓] All done!"
+# Run experiments with 1 and 8 actors
+elapsed1=$(run_and_time 1)
+elapsed2=$(run_and_time 8)
+
+# Final summary
+echo
+echo "[✓] Speedup comparison done."
+echo "[Summary] 1 actor run took: ${elapsed1}s"
+echo "[Summary] 8 actor(s) run took: ${elapsed2}s"

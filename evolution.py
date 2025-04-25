@@ -1,3 +1,6 @@
+# evolution.py
+import os
+import multiprocessing
 import torch
 from evotorch import Problem
 from evotorch.algorithms import XNES
@@ -6,26 +9,33 @@ from models.min_model import PlaceCellNetwork
 from objective_function import ObjectiveFunction
 from utils import log_device_status
 
-
 def run_evolution(
     trajectories,
     max_generations,
     patience,
     num_output_neurons,
-    device=None
+    device=None,
+    num_actors=None,
 ):
     # === Determine device if not explicitly passed ===
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     log_device_status()
+
+    # === Decide number of actors if not explicitly provided ===
+    if num_actors is None:
+        if device.type == "cpu":
+            num_actors = multiprocessing.cpu_count()
+        else:
+            num_actors = 1
+    print(f"[✓] Spawning {num_actors} actors (one CPU each) for evolution.")
 
     # === Create model to calculate parameter count ===
     dummy_model = PlaceCellNetwork(input_size=2, output_size=num_output_neurons).to(device)
     solution_length = sum(p.numel() for p in dummy_model.parameters())
     print(f"[✓] Number of network parameters: {solution_length}")
 
-    # === Define the objective function (remains on CPU or GPU agnostic) ===
+    # === Define the objective function ===
     objective_function = ObjectiveFunction(
         trajectories,
         num_output_neurons
@@ -38,12 +48,15 @@ def run_evolution(
         solution_length=solution_length,
         initial_bounds=(-1, 1),
         device=device,
-        dtype=torch.float32,  # optional for clarity,
-        num_actors=4,  # 👈 Enable parallelism
+        num_actors=num_actors,
+        #actor_options={"num_cpus": 1},  # Each actor gets one CPU core
     )
 
     # === Create searcher (XNES optimizer) ===
-    searcher = XNES(problem, radius_init=0.5)
+    searcher = XNES(problem, 
+                    radius_init=0.5,
+                    popsize=10
+)
 
     # === Logging ===
     stdout_logger = StdOutLogger(searcher)

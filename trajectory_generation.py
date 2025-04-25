@@ -1,98 +1,110 @@
-import numpy as np
+"""
+trajectory_generation.py
+────────────────────────────────────────────────────────────
+Tensor-based generators for the new pipeline.
+Each function returns ready-to-use tensors on the specified device.
+
+Shapes
+------
+vel        : [T, S, 2]  or [S, 2]   (dx, dy)
+init_probs : [T, N]     or [N]
+targets    : [T, S, N]  or [S, N]
+
+where T = #trajectories, S = #steps, N = grid_size²
+"""
+
+from __future__ import annotations
 import torch
+import itertools
 import random
 
 
-def compute_velocities_from_positions(positions):
+# --------------------------------------------------------------------- #
+def _one_hot(idx: int, length: int, device) -> torch.Tensor:
+    v = torch.zeros(length, device=device)
+    v[idx] = 1.0
+    return v
+
+
+# --------------------------------------------------------------------- #
+# 1. Exhaustive single-step transitions
+# --------------------------------------------------------------------- #
+def generate_single_step_trajectories_tensor(grid_size: int, device=None):
+    device = device or torch.device("cpu")
+    N = grid_size * grid_size
+    moves = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    vel_list, init_list, tgt_list = [], [], []
+
+    for r, c in itertools.product(range(grid_size), range(grid_size)):
+        for dx, dy in moves:
+            nr, nc = r + dx, c + dy
+            if 0 <= nr < grid_size and 0 <= nc < grid_size:
+                vel_list.append([[dx, dy]])                         # [1,2]
+                init_list.append(_one_hot(r * grid_size + c,  N, device))
+                tgt_list .append(_one_hot(nr * grid_size + nc, N, device).unsqueeze(0))
+
+    vel        = torch.tensor(vel_list, dtype=torch.float32, device=device)  # [T,1,2]
+    init_probs = torch.stack(init_list)                                       # [T,N]
+    targets    = torch.stack(tgt_list)                                        # [T,1,N]
+    return {"vel": vel, "init_probs": init_probs, "targets": targets}
+
+
+# --------------------------------------------------------------------- #
+# 2. One random trajectory of arbitrary length
+# --------------------------------------------------------------------- #
+def generate_random_trajectory_tensor(
+    grid_size: int,
+    traj_len: int,
+    starting_point=None,
+    device=None,
+):
     """
-    Compute velocity vectors from a list of positions.
-    Returns list of (dx, dy) tuples.
+    Generates ONE random trajectory of length ≤ traj_len.
+
+    Returns tensors:
+        vel        : [S, 2]
+        init_probs : [N]
+        targets    : [S, N]
     """
-    return [
-        (positions[i][0] - positions[i - 1][0], positions[i][1] - positions[i - 1][1])
-        for i in range(1, len(positions))
-    ]
+    device = device or torch.device("cpu")
+    N = grid_size * grid_size
+    moves = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
-
-def compute_place_cells_from_positions(positions, grid_size):
-    """
-    Generate one-hot encoded place cell activations for a list of (x, y) positions.
-    Returns a list of one-hot vectors.
-    """
-    grid_size_squared = grid_size * grid_size
-    one_hot_vectors = []
-
-    for pos in positions:
-        one_hot_vector = [0] * grid_size_squared
-        index = pos[0] * grid_size + pos[1]
-        one_hot_vector[index] = 1
-        one_hot_vectors.append(one_hot_vector)
-
-    return one_hot_vectors
-
-
-def generate_single_step_trajectories(grid_size):
-    """
-    Generate all valid one-step transitions (trajectories) in a grid.
-    Returns a list of dictionaries with keys: positions, velocities, place_cell_activations.
-    """
-    possible_moves = [[-1, 0], [1, 0], [0, -1], [0, 1]]
-    trajectories = []
-
-    for row in range(grid_size):
-        for col in range(grid_size):
-            current_position = [row, col]
-            for dx, dy in possible_moves:
-                next_position = [row + dx, col + dy]
-
-                if 0 <= next_position[0] < grid_size and 0 <= next_position[1] < grid_size:
-                    trajectories.append({
-                        "positions": [current_position, next_position],
-                        "velocities": [(dx, dy)],
-                        "place_cell_activations": compute_place_cells_from_positions(
-                            [current_position, next_position], grid_size
-                        ),
-                    })
-
-    return trajectories
-
-
-def generate_random_trajectory(grid_size, trajectory_length, starting_point=None):
-    """
-    Generate a single random trajectory in a grid with given length.
-
-    Returns:
-        dict with positions, velocities, and place_cell_activations
-    """
+    # --- choose start --------------------------------------------------
     if starting_point is None:
-        starting_point = (
-            random.randint(0, grid_size - 1),
-            random.randint(0, grid_size - 1),
-        )
+        pos = (random.randrange(grid_size), random.randrange(grid_size))
+    else:
+        pos = starting_point
 
-    positions = [starting_point]
-    velocities = []
+    positions, velocities = [pos], []
 
-    while len(velocities) < trajectory_length:
-        current_pos = positions[-1]
-        possible_moves = [
-            (current_pos[0] + dx, current_pos[1] + dy)
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            if 0 <= current_pos[0] + dx < grid_size
-            and 0 <= current_pos[1] + dy < grid_size
+    while len(velocities) < traj_len:
+        r, c = positions[-1]
+
+        # all neighbours except stay-put, staying inside grid
+        legal = [
+            (r + dx, c + dy)
+            for dx, dy in moves
+            if 0 <= r + dx < grid_size and 0 <= c + dy < grid_size
         ]
 
-        possible_moves = [move for move in possible_moves if move != current_pos]
-        if not possible_moves:
+        if not legal:          # dead end
             break
 
-        next_pos = random.choice(possible_moves)
-        velocity = (next_pos[0] - current_pos[0], next_pos[1] - current_pos[1])
-        velocities.append(velocity)
-        positions.append(next_pos)
+        nxt = random.choice(legal)
+        velocities.append((nxt[0] - r, nxt[1] - c))
+        positions .append(nxt)
 
-    return {
-        "positions": positions,
-        "velocities": velocities,
-        "place_cell_activations": compute_place_cells_from_positions(positions, grid_size)
-    }
+    S = len(velocities)
+    vel_tensor = torch.tensor(velocities, dtype=torch.float32, device=device)  # [S,2]
+
+    init_probs = _one_hot(
+        positions[0][0] * grid_size + positions[0][1], N, device
+    )
+
+    targets = torch.zeros(S, N, device=device)
+    for t, (r, c) in enumerate(positions[1:]):        # skip t=0
+        targets[t, r * grid_size + c] = 1.0
+
+    return {"vel": vel_tensor, "init_probs": init_probs, "targets": targets}

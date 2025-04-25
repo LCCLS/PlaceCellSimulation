@@ -1,60 +1,58 @@
-import time
-import os
-import pandas as pd
-import argparse
-import torch
-from joblib import Parallel, delayed
+# main.py  ──────────────────────────────────────────────────────────────
+"""
+Run ONE replicate of the experiment.
+Repeat via Slurm job arrays instead of an internal Python loop.
+"""
 
-from trajectory_generation import generate_single_step_trajectories
+import argparse
+import os
+import time
+import torch
+import pandas as pd
+
 from utils import create_experiment_directory
 from main_experiment import run_single_experiment
 
 
-def run_all_experiments(grid_size, num_replicates):
+def main(grid_size: int, rep_id: int, num_actors: int | None):
+
+    # ── 1.  Prepare data & paths ────────────────────────────────────── #
     experiment_dir = create_experiment_directory(f"grid_{grid_size}")
-    use_gpu = torch.cuda.is_available()
 
-    all_tasks = []
-    for replicate in range(num_replicates):
-        trajectories = generate_single_step_trajectories(grid_size)
-        all_tasks.append((grid_size, replicate, trajectories, experiment_dir))
+    print(f"[✓] CUDA available: {torch.cuda.is_available()}")
+    print(f"[✓] Grid {grid_size}×{grid_size}  |  Replicate {rep_id}")
+    print(f"[✓] Actors per evolutionary run: {num_actors or 'all available'}")
 
-    print(f"[✓] Starting {num_replicates} replicates for grid size {grid_size}...")
-    print(f"[✓] CUDA available: {use_gpu} → Running {'sequentially' if use_gpu else 'in parallel'}.")
+    # ── 2.  Run a single replicate ──────────────────────────────────── #
+    t0 = time.time()
+    result_row, metrics_df = run_single_experiment(
+        grid_size,
+        rep_id,
+        experiment_dir,
+        num_actors=num_actors,
+    )
 
-    start = time.time()
+    elapsed = time.time() - t0
+    print(f"[✓] Finished in {elapsed:.2f} s")
 
-    if use_gpu:
-        # Run sequentially to avoid GPU contention
-        results_with_metrics = [run_single_experiment(*task) for task in all_tasks]
-    else:
-        # Parallel CPU-based execution
-        results_with_metrics = Parallel(n_jobs=num_replicates)(
-            delayed(run_single_experiment)(*task) for task in all_tasks
-        )
-
-    end = time.time()
-
-    results = [result for result, _ in results_with_metrics]
-    results_df = pd.DataFrame(results)
-
-    output_csv_path = os.path.join(experiment_dir, "results.csv")
-    results_df.to_csv(output_csv_path, index=False)
-
-    aggregated_results = results_df.groupby(["grid_size"]).mean().reset_index()
-    aggregated_csv_path = os.path.join(experiment_dir, "aggregated_results.csv")
-    aggregated_results.to_csv(aggregated_csv_path, index=False)
-
-    print(f"[✓] Done in {end - start:.2f} seconds.")
-    print(f"[✓] Results saved to: {output_csv_path}")
-    print(f"[✓] Aggregated results saved to: {aggregated_csv_path}")
+    # ── 3.  Persist results for this replicate ──────────────────────── #
+    results_csv = os.path.join(experiment_dir, "results.csv")
+    pd.DataFrame([result_row]).to_csv(results_csv, index=False)
+    print(f"[✓] Saved results → {results_csv}")
 
 
+# ── CLI / Slurm entry point ─────────────────────────────────────────── #
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--grid_size", type=int, default=3, help="Grid size (e.g., 3 for 3x3)")
-    parser.add_argument("--replicates", type=int, default=10, help="Number of repetitions")
+    parser.add_argument("--grid_size", "-g", type=int, default=3,
+                        help="Grid size (default 3 → 3×3)")
+    parser.add_argument("--num_actors", "-a", type=int, default=None,
+                        help="CPU actors per evolutionary search "
+                             "(default: all available)")
+    parser.add_argument("--rep_id", "-r", type=int,
+                        default=int(os.getenv("SLURM_ARRAY_TASK_ID", "0")),
+                        help="Replicate index (default: $SLURM_ARRAY_TASK_ID "
+                             "or 0)")
     args = parser.parse_args()
 
-    run_all_experiments(grid_size=args.grid_size, num_replicates=args.replicates)
-s
+    main(args.grid_size, args.rep_id, args.num_actors)

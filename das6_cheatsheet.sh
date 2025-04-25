@@ -66,6 +66,7 @@ scp -r -o ProxyJump=lcn247@ssh.data.vu.nl lcn247@fs0.das6.cs.vu.nl:/var/scratch/
 
 # List partitions and node status
 sinfo
+
 # filter on GPU
 sinfo -o "%20N %10P %10G %20f" | grep gpu
 
@@ -105,3 +106,9 @@ pwd
 
 #move folder over to scratch directory 
 mv ~/distributed_asci_supercomputer-6 /var/scratch/$USER/project/
+
+
+
+# exectuable scripts 
+chmod +x run_das6_job.sh
+chmod +x setup_das6_env.sh
