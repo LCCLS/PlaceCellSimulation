@@ -1,0 +1,5 @@
+# exclude unnecessary .sh files 
+das6_cheatsheet.sh
+
+#exclude venv 
+venv
