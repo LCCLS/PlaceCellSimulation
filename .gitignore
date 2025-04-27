@@ -2,4 +2,4 @@
 das6_cheatsheet.sh
 
 #exclude venv 
-venv
+venv/

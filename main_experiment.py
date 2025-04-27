@@ -1,84 +1,116 @@
-# main_experiment.py
 import time
 import os
 import pandas as pd
 import torch
 
 from models.min_model import PlaceCellNetwork
-from evolution import run_evolution  
+from evolution import run_evolution
 from trajectory_generation import generate_single_step_trajectories_tensor
 from trajectory_testing import test_model_predictions
-from utils import (
-    create_directory,
-    save_model,
-    flatten_metrics_df,
-    log_device_status,
-)
+from utils import create_directory, save_model, flatten_metrics_df, log_device_status
 
 
 def run_single_experiment(
-    grid_size,
-    replicate,
-    experiment_dir,
-    num_actors,
-    evaluation_max_trajectory_length=300,
-    evaluation_max_repetitions=20,
-    evaluation_interval=50,
+    grid_size: int,
+    replicate: int,
+    experiment_dir: str,
+    num_actors: int | None,
+    evaluation_max_trajectory_length: int = 300,
+    evaluation_max_repetitions: int = 20,
+    evaluation_interval: int = 50,
 ):
+    """
+    Run one evolutionary search replicate (on CPU) and evaluate the resulting network (on GPU if available).
+
+    Returns:
+        row: Summary metrics for this replicate
+        metrics_df: Detailed evaluation DataFrame
+    """
     # === Create directory for this replicate ===
     iteration_dir = create_directory(
-        experiment_dir, f"iteration_{grid_size}x{grid_size}_replicate_{replicate}"
+        experiment_dir,
+        f"iteration_{grid_size}x{grid_size}_replicate_{replicate}"
     )
 
-    # === Set and log device ===
+    # === Log device status and set devices ===
     log_device_status()
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    trajectories = generate_single_step_trajectories_tensor(grid_size, device=device)
+   # device_evo  = torch.device("cpu")
+   # device_eval = torch.device("cpu")
 
-    # === Run evolutionary search ===
+    device_evo  = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device_eval = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    # === Generate trajectories on CPU ===
+    trajectories = generate_single_step_trajectories_tensor(
+        grid_size,
+        device=device_evo
+    )
+
+    # === Run evolutionary search on CPU ===
     start_time = time.time()
-    evo_searcher, _ = run_evolution(
+    evo_result = run_evolution(
         trajectories=trajectories,
-        max_generations=30000,
+        max_generations=1000000,
         patience=250,
         num_output_neurons=grid_size ** 2,
-        device=device,
+        device=device_evo,
         num_actors=num_actors,
     )
-    end_time = time.time()
-    total_time = end_time - start_time
+    total_time = time.time() - start_time
 
-    generations_run = evo_searcher.status["iter"]
+    # === Unpack evolution results ===
+    searcher        = evo_result["searcher"]
+    best_solution   = evo_result["best"]
+    best_weights    = best_solution.values if hasattr(best_solution, 'values') else best_solution
+    best_fitness    = evo_result["best_eval"]
+    generations_run = evo_result.get(
+        "generations_run",
+        searcher.status.get("iter", 0)
+    )
     time_per_generation = (
         total_time / generations_run if generations_run > 0 else total_time
     )
 
-    # === Load model with best weights ===
-    best_solution = evo_searcher.status['best'].values
-    network = PlaceCellNetwork(2, output_size=grid_size ** 2).to(device)
-    network.set_weights_flat(best_solution)
-
+    # === Build network on GPU (or CPU fallback) and load best weights ===
+    network = PlaceCellNetwork(
+        input_size=2,
+        output_size=grid_size ** 2,
+        dtype=torch.float32,
+        device=device_eval
+    )
+    # Convert best_weights to tensor on correct device/dtype
+    best_weights_tensor = torch.as_tensor(
+        best_weights,
+        device=device_eval,
+        dtype=network.dtype
+    )
+    network.set_weights_flat(best_weights_tensor)
     param_count = network.get_num_parameters()
-    best_fitness = evo_searcher.status.get("best_eval", None)
 
-    save_model(evo_searcher.status["best"], iteration_dir)
+    # === Save best weights ===
+    save_model(best_weights_tensor, iteration_dir)
 
-    # === Run evaluation ===
+    # Free up any unused GPU memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # === Evaluate model on GPU/CPU ===
     metrics_df = test_model_predictions(
-        network,
-        grid_size,
-        grid_size ** 2,
+        net=network,
+        grid_size=grid_size,
+        _unused_num_output_neurons=grid_size ** 2,
         evaluation_max_trajectory_length=evaluation_max_trajectory_length,
         evaluation_max_repetitions=evaluation_max_repetitions,
         evaluation_interval=evaluation_interval,
-        device=device,
+        device=device_eval,
     )
     metrics_df.to_csv(
-        os.path.join(iteration_dir, "evaluation_metrics.csv"), index=False
+        os.path.join(iteration_dir, "evaluation_metrics.csv"),
+        index=False
     )
     flattened_metrics = flatten_metrics_df(metrics_df)
 
-    # === Save result row ===
+    # === Save summary row ===
     row = {
         "grid_size": f"{grid_size}x{grid_size}",
         "replicate": replicate + 1,
@@ -90,9 +122,10 @@ def run_single_experiment(
     }
     row.update(flattened_metrics)
 
-    iteration_result_df = pd.DataFrame([row])
-    iteration_result_df.to_csv(
-        os.path.join(iteration_dir, "iteration_result.csv"), index=False
+    pd.DataFrame([row]).to_csv(
+        os.path.join(iteration_dir, "iteration_result.csv"),
+        index=False
     )
 
     return row, metrics_df
+

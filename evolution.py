@@ -1,87 +1,113 @@
 # evolution.py
-import os
-import multiprocessing
+# ─────────────────────────────────────────────────────────────
+# Runs SNES on a single GPU (no Ray actors) to minimize memory while leveraging CUDA.
+
+from __future__ import annotations
 import torch
 from evotorch import Problem
-from evotorch.algorithms import XNES
-from evotorch.logging import StdOutLogger, PandasLogger
+from evotorch.algorithms import SNES
+from evotorch.logging import PandasLogger
+
 from models.min_model import PlaceCellNetwork
 from objective_function import ObjectiveFunction
 from utils import log_device_status
 
 def run_evolution(
     trajectories,
-    max_generations,
-    patience,
-    num_output_neurons,
-    device=None,
-    num_actors=None,
+    max_generations: int,
+    patience: int,
+    num_output_neurons: int,
+    device: torch.device | None = None,
+    num_actors: int | None = 0,  # 0 → GPU-only evaluation
 ):
-    # === Determine device if not explicitly passed ===
+    """
+    Run an evolutionary search (SNES) on the given trajectories,
+    entirely on GPU (no CPU parallel Ray actors).
+
+    Args:
+        trajectories: dict of tensors for the objective function.
+        max_generations: maximum number of generations to run.
+        patience: gens with no improvement for early stopping.
+        num_output_neurons: dimensionality of the model output (grid_size**2).
+        device: device for the search (GPU recommended).
+        num_actors: number of Ray actors for evaluation (0 for GPU-only).
+
+    Returns:
+        A dict with the searcher, pandas_logger, best solution, fitness, and stats.
+    """
+    # 1. Choose device and log status
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log_device_status()
 
-    # === Decide number of actors if not explicitly provided ===
-    if num_actors is None:
-        if device.type == "cpu":
-            num_actors = multiprocessing.cpu_count()
-        else:
-            num_actors = 1
-    print(f"[✓] Spawning {num_actors} actors (one CPU each) for evolution.")
+    # 2. Build a dummy model to count parameters
+    dummy = PlaceCellNetwork(2, num_output_neurons).to(device)
+    solution_len = dummy.get_num_parameters()
+    print(f"[✓] Number of network parameters: {solution_len}")
 
-    # === Create model to calculate parameter count ===
-    dummy_model = PlaceCellNetwork(input_size=2, output_size=num_output_neurons).to(device)
-    solution_length = sum(p.numel() for p in dummy_model.parameters())
-    print(f"[✓] Number of network parameters: {solution_length}")
+    # 3. Create the objective function
+    objective = ObjectiveFunction(trajectories, num_output_neurons, device)
 
-    # === Define the objective function ===
-    objective_function = ObjectiveFunction(
-        trajectories,
-        num_output_neurons
-    )
-
-    # === Setup the optimization problem ===
+    # 4. Define the EvoTorch problem
     problem = Problem(
         objective_sense="min",
-        objective_func=objective_function,
-        solution_length=solution_length,
+        objective_func=objective,
+        solution_length=solution_len,
         initial_bounds=(-1, 1),
         device=device,
-        num_actors=num_actors,
-        #actor_options={"num_cpus": 1},  # Each actor gets one CPU core
+        num_actors=num_actors,  # 0 = no Ray actors
     )
 
-    # === Create searcher (XNES optimizer) ===
-    searcher = XNES(problem, 
-                    radius_init=0.5,
-                    popsize=10
-)
+    # 5. Initialize the SNES searcher
+    searcher = SNES(
+        problem,
+        radius_init=0.5,
+    )
 
-    # === Logging ===
-    stdout_logger = StdOutLogger(searcher)
+    # 6. Attach a pandas logger for diagnostics
     pandas_logger = PandasLogger(searcher)
 
-    # === Optimization loop ===
-    best_fitness = float("inf")
-    no_improvement_count = 0
+    # 7. Manual global-best bookkeeping
+    global_best: torch.Tensor | None = None
+    global_best_fval = float("inf")
+    stagnant = 0
 
-    for generation in range(max_generations):
+    # 8. Main optimization loop
+    for gen in range(1, max_generations + 1):
         searcher.step()
-        current_fitness = searcher.status["best_eval"]
 
-        if current_fitness < best_fitness - 0.005:
-            best_fitness = current_fitness
-            no_improvement_count = 0
+        pop_best      = searcher.status["pop_best"]
+        pop_best_eval = searcher.status["pop_best_eval"]
+
+        # update global best
+        if pop_best_eval < global_best_fval:
+            global_best_fval = pop_best_eval
+            global_best      = pop_best.clone()
+            stagnant = 0
         else:
-            no_improvement_count += 1
+            stagnant += 1
 
-        if no_improvement_count >= patience:
-            print(f"[✓] Early stopping after {patience} stagnant generations.")
+        # print progress every 100 generations
+        if gen % 100 == 0:
+            print(f"[▹] Gen {gen:5d}  best_eval = {global_best_fval:.6f}")
+
+        # early stopping
+        if stagnant >= patience:
+            print(f"[✓] Early stopping at gen {gen} (no improvement in {patience} gens).")
             break
-
-        if current_fitness < 0.01:
-            print(f"[✓] Converged at generation {generation} (fitness < 0.01).")
+        if global_best_fval < 0.01:
+            print(f"[✓] Converged at gen {gen} (fitness < 0.01).")
             break
+    else:
+        gen = max_generations
+        print(f"[▹] Final gen {gen:5d}  best_eval = {global_best_fval:.6f}")
 
-    return searcher, pandas_logger
+    return {
+        "searcher":        searcher,
+        "pandas_logger":   pandas_logger,
+        "best":            global_best,
+        "best_eval":       global_best_fval,
+        "pop_best":        pop_best,
+        "pop_best_eval":   pop_best_eval,
+        "generations_run": gen,
+    }

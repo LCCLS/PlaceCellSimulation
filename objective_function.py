@@ -44,18 +44,22 @@ class ObjectiveFunction:
         ).get_num_parameters()
 
     # -------------------------------------------------------------------- #
+    # objective_function.py  (inside __call__)
     def __call__(self, flat_weights: torch.Tensor) -> float:
-        # build candidate network
         net = PlaceCellNetwork(2, self.N).to(self.device)
         net.set_weights_flat(flat_weights)
 
-        # forward once over ALL trajectories & steps (probabilities)
-        probs = net.forward_steps(self.vel_tensor, h0=self.init_probs)   # [T,S,N]
+        # ── Ensure data tensors match the model’s device ───────────
+        vel    = self.vel_tensor.to(net.linear.weight.device, non_blocking=True)
+        h0     = self.init_probs.to(net.linear.weight.device, non_blocking=True)
+        target = self.targets_1hot.to(net.linear.weight.device, non_blocking=True)
 
-        # cross-entropy (mean over T·S)
+        # forward once  → probabilities [T,S,N]
+        probs = net.forward_steps(vel, h0=h0)
+
         loss = ce_prob_onehot(
-            probs.flatten(0, 1),               # [(T*S), N]
-            self.targets_1hot.flatten(0, 1),    # [(T*S), N]
+            probs.flatten(0, 1),
+            target.flatten(0, 1),
             reduction="mean",
         )
         return loss.item()

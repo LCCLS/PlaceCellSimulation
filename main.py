@@ -1,4 +1,3 @@
-# main.py  ──────────────────────────────────────────────────────────────
 """
 Run ONE replicate of the experiment.
 Repeat via Slurm job arrays instead of an internal Python loop.
@@ -15,7 +14,6 @@ from main_experiment import run_single_experiment
 
 
 def main(grid_size: int, rep_id: int, num_actors: int | None):
-
     # ── 1.  Prepare data & paths ────────────────────────────────────── #
     experiment_dir = create_experiment_directory(f"grid_{grid_size}")
 
@@ -31,7 +29,6 @@ def main(grid_size: int, rep_id: int, num_actors: int | None):
         experiment_dir,
         num_actors=num_actors,
     )
-
     elapsed = time.time() - t0
     print(f"[✓] Finished in {elapsed:.2f} s")
 
@@ -43,16 +40,31 @@ def main(grid_size: int, rep_id: int, num_actors: int | None):
 
 # ── CLI / Slurm entry point ─────────────────────────────────────────── #
 if __name__ == "__main__":
+    # Defaults from environment if available
+    grid_default = int(os.getenv("GRID_SIZE", "5"))
+    actors_env = os.getenv("SLURM_CPUS_PER_TASK")
+    default_actors = int(actors_env) if actors_env and actors_env.isdigit() else None
+    replicate_default = int(os.getenv("SLURM_ARRAY_TASK_ID", "0"))
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--grid_size", "-g", type=int, default=3,
-                        help="Grid size (default 3 → 3×3)")
-    parser.add_argument("--num_actors", "-a", type=int, default=None,
-                        help="CPU actors per evolutionary search "
-                             "(default: all available)")
-    parser.add_argument("--rep_id", "-r", type=int,
-                        default=int(os.getenv("SLURM_ARRAY_TASK_ID", "0")),
-                        help="Replicate index (default: $SLURM_ARRAY_TASK_ID "
-                             "or 0)")
+    parser.add_argument(
+        "--grid_size", "-g",
+        type=int,
+        default=grid_default,
+        help="Grid size (default from env GRID_SIZE or 5×5)"
+    )
+    parser.add_argument(
+        "--num_actors", "-a",
+        type=int,
+        default=default_actors,
+        help="CPU actors per evolutionary search (default from SLURM_CPUS_PER_TASK or all available)",
+    )
+    parser.add_argument(
+        "--rep_id", "-r",
+        type=int,
+        default=replicate_default,
+        help="Replicate index (default from SLURM_ARRAY_TASK_ID or 0)",
+    )
     args = parser.parse_args()
 
     main(args.grid_size, args.rep_id, args.num_actors)

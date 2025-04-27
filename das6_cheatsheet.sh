@@ -96,7 +96,7 @@ rm -rf distributed_asci_supercomputer-6.tar.gz
 rm -rf grid_*
 rm -f slurm-*.out slurm-*.err
 
-# remove files your machine
+# remove files your machinels
 rm distributed_asci_supercomputer-6.tar.gz
 
 
@@ -112,3 +112,6 @@ mv ~/distributed_asci_supercomputer-6 /var/scratch/$USER/project/
 # exectuable scripts 
 chmod +x run_das6_job.sh
 chmod +x setup_das6_env.sh
+
+
+  
