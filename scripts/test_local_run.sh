@@ -34,7 +34,7 @@ run_and_time() {
     >&2 echo
     >&2 echo "[▶] Starting run with $actors actor(s)..."
     local start=$(date +%s)
-    python3 main.py \
+    python -u src/main.py \
       --grid_size "$GRID_SIZE" \
       --replicates "$REPLICATES" \
       --num_actors "$actors" >&2
